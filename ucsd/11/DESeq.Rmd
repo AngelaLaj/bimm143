@@ -1,0 +1,313 @@
+---
+title: "Week 6 DESeq analysis"
+author: "Angela Abraham"
+date: "2025-11-06"
+output: pdf_document
+---
+
+This week we are looking at differential expression analysis.
+
+The data for this hands-on session comes form a published RNA-seq experiment where airway smooth muscle cells were treated with dexamethasone, a synthetic glucocorticoid steroid with anti-flammatory effects (Himes et al. 2014).
+
+## Import/Read the data frome Himes et al.
+
+```{r}
+counts <-read.csv("airway_scaledcounts.csv", row.names=1)
+
+metadata<-read.csv("airway_metadata.csv")
+```
+
+Lets have a wee peak at this data
+```{r}
+head(metadata)
+```
+
+Sanity check on correspondence of counts and metadata
+
+```{r}
+all(metadata$id== colnames(counts))
+```
+
+```{r}
+all( c(T,T,F,T))
+```
+>Q1. How many genes are in this dataset?
+
+```{r}
+nrow(counts)
+```
+There are 38694 genes in this dataset.
+
+>Q2. How many 'control' cell lines do we have?
+
+```{r include=FALSE}
+sum(metadata$dex=="control")
+```
+There are 4 control cell lines in this dataset.
+
+### Extract and summarize the control samples
+
+To find out where the control samples are we need the metadata
+
+```{r}
+control<-metadata[metadata$dex == "control",]
+control.counts<- counts[ , control$id]
+control.mean<-rowMeans(control.counts)
+head(control.mean)
+```
+>Q3. How would you make the above code in either approach more robust? Is there a function that could help here?
+
+```{r}
+control.mean<-rowSums(control.counts)/ncol(control.counts)
+```
+Using 'rowSums' would help improve the code to make it more robust.
+
+## Extract and summarize the treated (i.e. drug) samples
+
+>Q4. Follow the same procedure for the treated samples (1.e. calculate the mean per gene across drug treated samples and assign to a labeled vector called treated.mean)
+
+```{r}
+treated<-metadata[metadata$dex=="treated",]
+treated.counts<-counts[,treated$id]
+treated.mean<-rowMeans(treated.counts)
+```
+
+Store these results together in a new data frame called 'meancounts'
+
+```{r}
+meancounts<- data.frame(control.mean, treated.mean)
+```
+
+Lets make a plot to explore the results a little
+
+>Q5(a). Create a scatter plot showing the mean of the treated samples against the mean of the control samples. 
+
+```{r}
+plot(meancounts[,1], meancounts[,2], xlab="Control,", ylab="Treated")
+```
+
+>Q5(b). You could also use the ggplot2 package to make the figure. What geom_?() function would you use to create the plot?
+
+```{r}
+library(ggplot2)
+
+ggplot(meancounts) +
+  aes(control.mean, treated.mean) + 
+  geom_point()
+```
+
+>Q6. Try plotting both axes on a log scale. What is the argument to plot() that allows you to do this?
+
+We will make a log-log plot to draw out this skewed data and see what is going on.
+
+```{r}
+plot(meancounts[,1], meancounts[,2], log="xy",
+     xlab="log control counts",
+     ylab="log of treated counts")
+```
+
+We often use log2 transformations when dealing with this sort of data.
+
+```{r}
+log2(20/20)
+```
+```{r}
+log2(40/20)
+```
+```{r}
+log2(20/40)
+```
+```{r}
+log2(80/20)
+```
+This log2 transformation has this mice property where if there is no change, the log2 value will be zero and if it double the log2 value, it will be 1 and if it is halved, it will be -1.
+
+So lets add a log2 fold change column to our results so far
+
+```{r}
+meancounts$log2fc<-log2(meancounts[,"treated.mean"]/meancounts[,"control.mean"])
+head(meancounts)
+```
+
+We need to get rid of zero count genes that we can not say anything about 
+>Q7. What is the purpose of the arr.ind arhument in the which() function call above? Why would we then take the first column of the output and need to call the unique() function?
+
+```{r}
+zero.values<-(which(meancounts[,1:2]==0, arr.ind=TRUE))
+to.rm<-unique(zero.values[,1])
+mycounts<-meancounts[-to.rm,]
+```
+
+```{r}
+head(mycounts)
+```
+
+How many genes are remaining?
+
+```{r}
+nrow(mycounts)
+```
+
+Arr.ind() is to see which gene rows have zeros. The first column is for the row numbers and using the unique() would help us remove each gene once since a gene can be in both columns (treated and in control).
+
+# Use fold change to see up and down regulated genes. 
+
+A common threshold used for calling something differentially expressed is a log2(FoldChange) of greater than 2 or less than -2. Let's filter the dataset both ways to see how many genes are upi or down-regulated. 
+
+>Q8. Using the up.ind vector above, can you determine how many up regulated genes we have at the greater than 2 fc level?
+
+```{r}
+sum(mycounts$log2fc>2)
+```
+>Q9. Using the down.ind vector above, can you detemrine how many down regulated genes we have at the greater than 2 fc level?
+
+and down regulated
+
+```{r}
+sum(mycounts$log2fc< -2)
+```
+
+>Q10. Do you trust these results? Why or why not?
+
+We cannot trust these results fully because we don't yet know if these changes are significant. 
+
+# DESeq2 analysis
+
+Let's do this the right way. DESeq2 is an R package specifically for analyzing count-based NGS data like RNA-seq. It is available from Bioconductor. Bioconductor is a project to provide tools for analyzing high-throughput genomic data including RNA-seq, ChIP-seq and arrays. 
+
+```{r}
+#load upDESeq2
+library(DESeq2)
+
+dds<-DESeqDataSetFromMatrix(countData=counts,
+      colData=metadata,
+      design=~dex)
+```
+
+```{r}
+vsd<-vst(dds, blind=FALSE)
+plotPCA(vsd, intgroup=c("dex"))
+```
+
+```{r}
+pcaData<-plotPCA(vsd,intgroup=c("dex"), returnData=TRUE)
+head(pcaData)
+```
+
+```{r}
+percentVar<-round(100*attr(pcaData,"percentVar"))
+```
+
+```{r}
+ggplot(pcaData) +
+  aes(x=PC1, y=PC2, color=dex) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed() +
+  theme_bw()
+```
+
+# DESeq analysis
+
+```{r}
+dds<-DESeq(dds)
+```
+
+```{r}
+res<-results(dds)
+res
+```
+
+We can get some basic summaries tallies using the 'summary()' function
+
+```{r}
+summary(res, alpha=0.05)
+```
+
+# Adding annotation data
+
+```{r}
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+```
+
+```{r}
+columns(org.Hs.eg.db)
+```
+
+```{r}
+res$symbol<-mapIds(org.Hs.eg.db,
+                  keys=row.names(res), keytype="ENSEMBL", column="SYMBOL", multiVals="first")
+head(res)
+```
+
+>Q11. Run the mapIds() function two more times to add the Entrez ID and Uniprot accession and GENENAME as new columns called res$entrez, res$uniprot, and res$genename.
+
+```{r}
+res$entrez<-mapIds(org.Hs.eg.db, keys=row.names(res), column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+res$uniprot<-mapIds(org.Hs.eg.db, keys=row.names(res), column="UNIPROT", keytype="ENSEMBL", multiVals="first")
+
+res$genename<-mapIds(org.Hs.eg.db, keys=row.names(res), column="GENENAME", keytype="ENSEMBL", mutliVals="first")
+
+head(res)
+```
+
+```{r}
+ord<-order(res$padj)
+head(res[ord,])
+```
+
+```{r}
+write.csv(res[ord,], "deseq_results.csv")
+```
+
+
+# Volcano plot
+
+Make a summary plot of our results.
+
+```{r}
+plot(res$log2FoldChange, -log(res$padj), xlab="Log2(FoldChange)", ylab="-Log(P-value)")
+```
+
+```{r}
+plot(res$log2FoldChange, -log(res$padj),ylab="-Log(P-value)", xlab="Log2(FoldChange)")
+
+abline(v=c(-2,2),col="darkgray", lty=2)
+abline(h=-log(0.05), col="darkgray", lty=2)
+```
+
+```{r}
+mycols<-rep("gray", nrow(res))
+mycols[abs(res$log2FoldChange)>2]<-"red"
+
+inds<-(res$padj<0.01) & (abs(res$log2FoldChange)>2)
+mycols[inds]<-"blue"
+
+plot(res$log2FoldChange, -log(res$padj), col=mycols, ylab="-Log(P-value", xlab="Log2(FoldChange)")
+
+abline(v=c(-2,2), col="gray", lty=2)
+abline(h=-log(0.1), col="gray", lty=2)
+```
+
+```{r}
+log(0.1)
+log(0.005)
+```
+
+Finish for today by saving our results
+
+```{r}
+write.csv(res, file="DESeq2_results.csv")
+```
+
+
+
+
+
+
+
+
+
